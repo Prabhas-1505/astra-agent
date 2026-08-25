@@ -1,0 +1,24 @@
+services:
+  r1:
+    build: ./fake_router
+    environment:
+      - ROUTER_NAME=R1
+      - FAULT_SCENARIO=${FAULT_SCENARIO:-gi_shutdown}
+    ports:
+      - "2201:8022"
+    networks:
+      - labnet
+
+  r2:
+    build: ./fake_router
+    environment:
+      - ROUTER_NAME=R2
+      - FAULT_SCENARIO=${FAULT_SCENARIO:-gi_shutdown}
+    ports:
+      - "2202:8022"
+    networks:
+      - labnet
+
+networks:
+  labnet:
+    driver: bridge
