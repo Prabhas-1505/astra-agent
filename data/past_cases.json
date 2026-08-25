@@ -2,9 +2,9 @@
   {
     "context_summary": "=== Logs ===\n\n--- R1 ---\n*MAR  3 09:14:02.113: %LINK-3-UPDOWN: Interface GigabitEthernet0/0, changed state to administratively down\n*MAR  3 09:14:03.119: %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0, changed state to down\n*MAR  3 09:14:05.220: %OSPF-5-ADJCHG: Process 1, Nbr 2.2.2.2 on GigabitEthernet0/0 from FULL to DOWN, Neighbor Down: Interface down or detached\n\n--- R2 ---\n*MAR  3 09:14:06.331: %OSPF-5-ADJCHG: Process 1, Nbr 1.1.1.1 on GigabitEthernet0/0 from FULL to DOWN, Neighbor Down: Dead timer expired\n\n=== Topology ===\n\n--- R1 ---\n$ show ip interface brief\nInterface                  IP-Address      OK? Method Status                Protocol\nGigabitEthernet0/0         10.0.12.1       YES manual administratively down down\nLoopback0                  1.1.1.1        ",
     "root_cause": {
-      "statement": "The GigabitEthernet0/0 interface on R1 is administratively down, which is preventing OSPF adjacency with R2.",
+      "statement": "The OSPF neighbor relationship failure between R1 and R2 is caused by the GigabitEthernet0/0 interface on R1 being administratively down, preventing OSPF from forming an adjacency.",
       "confidence": 0.95,
-      "recommended_fix": "interface GigabitEthernet0/0\n no shutdown"
+      "recommended_fix": "no shutdown interface GigabitEthernet0/0"
     },
     "outcome": "approved",
     "embedding": [

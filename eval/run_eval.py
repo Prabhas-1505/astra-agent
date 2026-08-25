@@ -86,8 +86,7 @@ def grade(scenario_name: str, final_state: dict) -> tuple[str, float | None]:
     if not rc:
         return "inconclusive", None
 
-    idx = final_state["hypothesis_index"]
-    hyp = final_state["hypotheses"][idx]
+    hyp = final_state["current_hypothesis"]
     text = " ".join([rc["statement"], rc["recommended_fix"], hyp["statement"]]).lower()
 
     device_ok = hyp["target_device"] == expected["device"]

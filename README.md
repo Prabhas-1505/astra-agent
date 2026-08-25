@@ -69,16 +69,19 @@ README covers what's actually built and how to run it.
 
 ## What's not implemented
 
-- **pyATS as the primary diagnostic tool** — attempted, not shipped. pyATS
-  needs `unicon`, whose connection state machine is built around real IOS
-  banner/prompt negotiation. Against the lab's fake CLI, `dev.connect()`
-  hung indefinitely with zero output even with `log_stdout=True` and a 20s
-  per-operation timeout — it never got past the initial handshake. Making it
-  work would mean writing a custom Unicon OS plugin to match the fake CLI's
-  simplified prompt behavior, which is disproportionate effort for a lab
-  double of the real diagnostic value pyATS would add. Netmiko remains the
-  only diagnostic tool; revisit pyATS only against a real or more
-  IOS-faithful lab (e.g. real IOSv images in GNS3/EVE-NG).
+- **pyATS as the primary diagnostic tool** — attempted twice, not shipped.
+  pyATS needs `unicon`, whose connection layer hung indefinitely (zero
+  output, well past its own timeout) against the lab's fake CLI both with
+  `os: ios` (assumes real IOS banner/prompt negotiation) and `os: generic`
+  (Unicon's looser, vendor-agnostic prompt matching) — ruling out "wrong OS
+  profile" as the cause. The mismatch is more fundamental: our fake CLI is a
+  line-based `asyncssh` process handler, not a full pty-driven shell, and
+  Unicon's connection handshake apparently expects the latter. Making pyATS
+  work would mean either building a proper pty-backed fake CLI or writing a
+  custom Unicon connection plugin — real effort disproportionate to what it
+  adds over Netmiko here. Netmiko remains the only diagnostic tool; revisit
+  pyATS only against a real or more IOS-faithful lab (e.g. real IOSv images
+  in GNS3/EVE-NG).
 
 ## The lab
 
@@ -129,19 +132,21 @@ python -m eval.run_eval
 
 Results vary run to run — this is real LLM non-determinism, not flakiness in
 the harness, and worth reporting honestly rather than cherry-picking the best
-run. One run scored 3/3 (100%), including a genuine self-correction on
-`ospf_network_missing` (refuted once, retried, landed on the right cause). A
-later run scored 2/3 (67%) on the same scenario, and inspecting it surfaced a
-real architectural limitation rather than noise: the model gathered the
-*right* evidence on its first hypothesis (R1's running-config, correctly
-showing no `network` statement at all) but phrased the hypothesis narrowly as
-"area ID mismatch" — evidence-that-nothing-exists doesn't confirm
-evidence-of-a-specific-wrong-value, so Validation correctly refuted it, and
-because hypotheses are a fixed list of 3 generated upfront rather than
-regenerated from evidence gathered so far, it never got a chance to re-frame
-and exhausted into "inconclusive." A worthwhile next step, if this goes
-further: feed evidence back into the Hypothesis Engine on refutation instead
-of just advancing a static list.
+run. Early on, a run scored 2/3 (67%): the model gathered the *right*
+evidence on its first hypothesis for `ospf_network_missing` (R1's
+running-config, correctly showing no `network` statement at all) but phrased
+the hypothesis narrowly as "area ID mismatch" — evidence-that-nothing-exists
+doesn't confirm evidence-of-a-specific-wrong-value, so Validation correctly
+refuted it. At the time, hypotheses were a fixed list of 3 generated upfront,
+so once refuted it had no way to re-frame and exhausted into "inconclusive."
+
+That was a real architectural gap, not noise, so it's fixed: the Hypothesis
+Engine now regenerates a single new hypothesis on every retry, informed by
+every prior attempt's evidence and *why* it was refuted (see
+`_format_ruled_out` in `app/agent/nodes.py`), instead of cycling through a
+static list decided before any evidence came in. Two eval runs since the fix:
+**3/3 (100%) both times**, with `ospf_network_missing` needing exactly one
+informed retry each time instead of exhausting.
 
 ## Tests
 

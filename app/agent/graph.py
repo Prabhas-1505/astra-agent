@@ -10,9 +10,9 @@ class AstraState(TypedDict, total=False):
     topology: dict[str, dict]
     config_drift: dict[str, str]
     context: str
-    hypotheses: list[dict]
-    hypothesis_index: int
-    evidence: dict[int, dict]
+    current_hypothesis: dict
+    current_evidence: dict
+    attempts: list[dict]
     validation_result: Optional[str]
     validation_reasoning: Optional[str]
     retry_count: int
@@ -56,7 +56,10 @@ def build_graph():
         route_after_validation,
         {
             "confirmed": "root_cause_synthesis",
-            "retry": "diagnostic_tool",
+            # A refutation regenerates a new hypothesis informed by everything
+            # ruled out so far, rather than advancing through a static list
+            # decided upfront.
+            "retry": "hypothesis_engine",
             "exhausted": "escalate_inconclusive",
         },
     )
