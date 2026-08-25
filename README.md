@@ -66,6 +66,13 @@ README covers what's actually built and how to run it.
   auto-launches the full ASTRA graph — no manual `python -m app.main`
   needed. Verified end-to-end: router restart → real UDP packet → listener
   match → ASTRA launch → correct diagnosis → KB writeback, unattended.
+- **Gradio dashboard** — `app/ui/gradio_app.py` shows the reasoning trail
+  (KB precedent + runbook matches, ruled-out hypotheses, final root cause)
+  and replaces the CLI's blocking `input()` prompt with Approve/Reject
+  buttons. Backed by `build_diagnosis_graph()`, a graph variant that stops at
+  root cause instead of calling `human_approval` directly, so the UI can
+  collect the decision itself and call the same `record_decision`/
+  `record_inconclusive` KB-writeback helpers the CLI uses.
 
 ## What's not implemented
 
@@ -118,6 +125,35 @@ python -m app.main
 It'll pull logs/topology/config from both routers, propose hypotheses, verify
 them, and print a root cause + confidence + recommended fix, then ask for
 approval before writing the outcome back to the KB.
+
+## UI
+
+```bash
+python -m app.ui.gradio_app   # defaults to http://127.0.0.1:7900, override with PORT=
+```
+
+(7900 instead of Gradio's usual 7860 default — deliberately, to avoid colliding
+with other Gradio apps you might already have running, e.g. from Jupyter
+notebooks using the same default port.)
+
+Click "Run Diagnosis" to trigger the pipeline against whatever fault is
+currently in the lab, then Approve or Reject the recommended fix.
+
+Worth documenting since it was caught live rather than in a test: the first
+run showed the KB matching the *wrong* runbook — "OSPF area ID mismatch"
+surfaced instead of "Interface administratively down," despite the interface
+fault being the actual (correctly diagnosed) root cause. Checking the raw
+cosine similarities confirmed this wasn't a bug: the area-mismatch runbook's
+phrasing ("config-drift", "diff running-config against golden baseline")
+happens to overlap more with the aggregated context's *structure* than the
+correct runbook does, even though it's the wrong match for this incident. A
+known failure mode of single-vector retrieval over long multi-section text —
+incidental vocabulary overlap can outrank the true semantic match. The final
+diagnosis was unaffected (the LLM reasoned past the misleading hint using
+actual evidence), but the KB panel showing one confidently-wrong pick was
+misleading on its own, so `retrieve_runbooks` now returns the top 2 instead
+of top 1 — cheap, and it surfaces the correct runbook alongside the
+incidental match instead of hiding it.
 
 ## Eval harness
 

@@ -110,6 +110,8 @@ def hypothesis_engine(state):
     attempts = state.get("attempts", [])
 
     precedent_text = ""
+    precedent = []
+    runbooks = []
     if not attempts:  # only worth checking KB/runbooks on the very first guess
         precedent = kb.retrieve_similar(context, k=2)
         if precedent:
@@ -126,7 +128,13 @@ def hypothesis_engine(state):
         else:
             print("\n[KB] no precedent cases yet")
 
-        runbooks = kb.retrieve_runbooks(context, k=1)
+        # k=2, not 1: single-vector retrieval over a long multi-section context
+        # can rank a runbook higher on incidental vocabulary overlap (e.g.
+        # shared "config drift" phrasing) even when a different runbook is the
+        # true semantic match for the actual root cause. Surfacing the top-2
+        # gives the LLM (and the human reading the KB panel) both candidates
+        # instead of one confidently-wrong pick.
+        runbooks = kb.retrieve_runbooks(context, k=2)
         if runbooks:
             print(f"[KB] matched {len(runbooks)} runbook(s)")
             blocks = [f"- {rb['title']}: {rb['body']}" for rb in runbooks]
@@ -152,12 +160,16 @@ def hypothesis_engine(state):
         f"{context}"
     )
     result = llm.with_structured_output(Hypothesis).invoke(prompt)
-    return {
+    update = {
         "current_hypothesis": result.model_dump(),
         "current_evidence": {},
         "attempts": attempts,
         "retry_count": state.get("retry_count", 0),
     }
+    if not attempts:  # only set on the first pass, for the UI to display
+        update["kb_precedent"] = precedent
+        update["kb_runbooks"] = runbooks
+    return update
 
 
 def diagnostic_tool(state):
@@ -213,6 +225,20 @@ def root_cause_synthesis(state):
     return {"root_cause": rc.model_dump()}
 
 
+def record_decision(context: str, root_cause: dict, outcome: str) -> None:
+    """Shared by the CLI's human_approval node and the Gradio UI's approve/
+    reject buttons — the KB writeback shouldn't care which one collected the
+    decision.
+    """
+    kb.write_case(context, root_cause, outcome)
+    print(f"[KB] wrote back case (outcome: {outcome}) for future precedent")
+
+
+def record_inconclusive(context: str) -> None:
+    kb.write_case(context, None, "inconclusive")
+    print("[KB] wrote back inconclusive case for future precedent")
+
+
 def human_approval(state):
     rc = state["root_cause"]
     print("\n=== ROOT CAUSE ===")
@@ -225,8 +251,7 @@ def human_approval(state):
         print("\nApproved. ASTRA does not auto-execute — apply the fix manually.")
     else:
         print("\nRejected. No fix applied.")
-    kb.write_case(state["context"], rc, outcome)
-    print(f"[KB] wrote back case (outcome: {outcome}) for future precedent")
+    record_decision(state["context"], rc, outcome)
     return {"approval": outcome}
 
 
@@ -239,6 +264,5 @@ def escalate_inconclusive(state):
         for cmd, out in attempt["evidence"].items():
             print(f"  $ {cmd}\n  {out}")
         print(f"  ruled out: {attempt['reasoning']}")
-    kb.write_case(state["context"], None, "inconclusive")
-    print("[KB] wrote back inconclusive case for future precedent")
+    record_inconclusive(state["context"])
     return {}

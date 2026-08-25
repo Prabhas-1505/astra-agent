@@ -13,6 +13,8 @@ class AstraState(TypedDict, total=False):
     current_hypothesis: dict
     current_evidence: dict
     attempts: list[dict]
+    kb_precedent: list[dict]
+    kb_runbooks: list[dict]
     validation_result: Optional[str]
     validation_reasoning: Optional[str]
     retry_count: int
@@ -25,8 +27,12 @@ def route_after_validation(state: AstraState) -> str:
     return state["validation_result"]
 
 
-def build_graph():
-    g = StateGraph(AstraState)
+def _add_diagnosis_nodes(g: StateGraph) -> None:
+    """Everything up through root cause / inconclusive — shared by the CLI
+    graph (which adds a human_approval node after this) and the UI's
+    diagnosis-only graph (which ends here so the UI can collect the approval
+    decision itself, without a blocking input() call).
+    """
     g.add_node("logs_analyzer", nodes.logs_analyzer)
     g.add_node("topology_analyzer", nodes.topology_analyzer)
     g.add_node("config_analyzer", nodes.config_analyzer)
@@ -35,7 +41,6 @@ def build_graph():
     g.add_node("diagnostic_tool", nodes.diagnostic_tool)
     g.add_node("validation", nodes.validation)
     g.add_node("root_cause_synthesis", nodes.root_cause_synthesis)
-    g.add_node("human_approval", nodes.human_approval)
     g.add_node("escalate_inconclusive", nodes.escalate_inconclusive)
 
     # Parallel analysis fan-out
@@ -63,7 +68,27 @@ def build_graph():
             "exhausted": "escalate_inconclusive",
         },
     )
+
+
+def build_graph():
+    """CLI graph — includes the blocking input()-based approval gate."""
+    g = StateGraph(AstraState)
+    _add_diagnosis_nodes(g)
+    g.add_node("human_approval", nodes.human_approval)
     g.add_edge("root_cause_synthesis", "human_approval")
     g.add_edge("human_approval", END)
+    g.add_edge("escalate_inconclusive", END)
+    return g.compile()
+
+
+def build_diagnosis_graph():
+    """UI graph — stops at root cause / inconclusive; the caller (e.g. the
+    Gradio app) collects the approval decision through its own UI and calls
+    nodes.record_decision / nodes.record_inconclusive directly instead of a
+    blocking input() call.
+    """
+    g = StateGraph(AstraState)
+    _add_diagnosis_nodes(g)
+    g.add_edge("root_cause_synthesis", END)
     g.add_edge("escalate_inconclusive", END)
     return g.compile()
