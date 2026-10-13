@@ -4,6 +4,8 @@ import os
 import re
 
 from langchain_openai import ChatOpenAI
+from netmiko.exceptions import NetmikoBaseException
+from paramiko.ssh_exception import SSHException
 from pydantic import BaseModel, Field
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
@@ -12,6 +14,30 @@ from app.kb import store as kb
 from app.tools.netmiko_tool import DEVICES, run_commands
 
 logger = logging.getLogger(__name__)
+
+DEVICE_UNREACHABLE_MARKER = "DEVICE_UNREACHABLE"
+
+
+def _safe_run_commands(device: str, commands: list[str]) -> dict[str, str]:
+    """Isolates one device's connection failure from the rest of the
+    diagnosis. Before this, an unreachable device raised straight out of the
+    analyzer fan-out or diagnostic_tool and crashed the whole graph run — a
+    down device is real signal (sometimes *the* root cause), not a reason to
+    abort. `run_commands`' own tenacity retry already covers transient
+    timeouts; this is the outer boundary for when a device is genuinely
+    unreachable for the whole run.
+    """
+    try:
+        return run_commands(device, commands)
+    # Netmiko's exceptions actually span two separate base classes, not one:
+    # NetmikoBaseException covers ReadTimeout/ConnectionException, but the
+    # most common real-world failure, NetmikoTimeoutException (same for
+    # NetmikoAuthenticationException), inherits from paramiko's SSHException
+    # instead — confirmed via __mro__, not assumed. Missing it here would
+    # have silently defeated the whole point of this isolation boundary.
+    except (NetmikoBaseException, SSHException, OSError) as exc:
+        logger.warning("%s: %s is unreachable (%s)", DEVICE_UNREACHABLE_MARKER, device, exc)
+        return {cmd: f"{DEVICE_UNREACHABLE_MARKER}: {exc}" for cmd in commands}
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
@@ -74,14 +100,14 @@ class RootCause(BaseModel):
 
 
 def logs_analyzer(state):
-    logs = {name: run_commands(name, ["show logging"])["show logging"] for name in DEVICES}
+    logs = {name: _safe_run_commands(name, ["show logging"])["show logging"] for name in DEVICES}
     return {"logs": logs}
 
 
 def topology_analyzer(state):
     topology = {}
     for name in DEVICES:
-        out = run_commands(name, ["show ip interface brief", "show cdp neighbors"])
+        out = _safe_run_commands(name, ["show ip interface brief", "show cdp neighbors"])
         topology[name] = out
     return {"topology": topology}
 
@@ -89,7 +115,7 @@ def topology_analyzer(state):
 def config_analyzer(state):
     drift = {}
     for name in DEVICES:
-        running = run_commands(name, ["show running-config"])["show running-config"]
+        running = _safe_run_commands(name, ["show running-config"])["show running-config"]
         golden = GOLDEN_CONFIGS.get(name, "")
         diff = "\n".join(
             difflib.unified_diff(
@@ -343,7 +369,7 @@ def diagnostic_tool(state):
     if not safe_devices or not safe_commands:
         return {"current_evidence": {}}
 
-    evidence = {device: run_commands(device, safe_commands) for device in safe_devices}
+    evidence = {device: _safe_run_commands(device, safe_commands) for device in safe_devices}
     return {"current_evidence": evidence}
 
 

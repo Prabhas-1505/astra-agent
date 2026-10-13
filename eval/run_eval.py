@@ -33,6 +33,9 @@ EVAL_KB_PATH = ROOT / "data" / "eval_cases.json"
 sys.path.insert(0, str(ROOT))
 
 from app.agent.graph import build_graph
+from app.logging_config import configure_logging, new_correlation_id
+
+configure_logging()
 
 SCENARIOS = {
     "gi_shutdown": {
@@ -60,6 +63,10 @@ SCENARIOS = {
         "keywords": ["mtu"],
         "description": "MTU mismatch on R1's link interface blocking OSPF adjacency",
     },
+    "healthy_network": {
+        "no_fault": True,
+        "description": "Negative case — full OSPF adjacency, no drift, benign logs",
+    },
 }
 
 # gpt-4o-mini pricing as of the time this harness was written (USD per 1K
@@ -81,10 +88,14 @@ def wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 15) -> bo
 
 
 def restart_lab(scenario: str) -> None:
+    # --build matters: without it, a new/edited scenario file (lab/fake_router/
+    # scenarios/*.py) silently keeps running against whatever image was last
+    # built, since --force-recreate alone only recreates the *container*, not
+    # the image. Docker's layer cache makes the no-op case fast.
     env = os.environ.copy()
     env["FAULT_SCENARIO"] = scenario
     subprocess.run(
-        ["docker", "compose", "-f", str(LAB_COMPOSE), "up", "-d", "--force-recreate"],
+        ["docker", "compose", "-f", str(LAB_COMPOSE), "up", "-d", "--build", "--force-recreate"],
         env=env,
         check=True,
         capture_output=True,
@@ -106,6 +117,7 @@ def run_case(kb_enabled: bool) -> tuple[dict, float]:
         EVAL_KB_PATH.unlink()
     os.environ["ASTRA_KB_PATH"] = str(EVAL_KB_PATH)
     os.environ["ASTRA_KB_ENABLED"] = "1" if kb_enabled else "0"
+    new_correlation_id()
     graph = build_graph()
     with patch("builtins.input", return_value="y"):
         start = time.perf_counter()
@@ -117,6 +129,16 @@ def run_case(kb_enabled: bool) -> tuple[dict, float]:
 def grade(scenario_name: str, final_state: dict) -> tuple[str, float | None]:
     expected = SCENARIOS[scenario_name]
     rc = final_state.get("root_cause")
+
+    if expected.get("no_fault"):
+        # Negative case: there is no root cause. Correct iff ASTRA reaches
+        # inconclusive (exhausted retries, never confirmed anything) rather
+        # than confirming a hallucinated fault with a confidence score — a
+        # false positive, which "inconclusive" and "incorrect" alone don't
+        # distinguish from the fault-injection scenarios' failure modes, so
+        # it's labeled explicitly here.
+        return ("correct", None) if not rc else ("false_positive", rc["confidence"])
+
     if not rc:
         return "inconclusive", None
 

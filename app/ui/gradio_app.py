@@ -13,7 +13,7 @@ load_dotenv()
 
 from app.agent import nodes
 from app.agent.graph import build_diagnosis_graph
-from app.logging_config import configure_logging
+from app.logging_config import configure_logging, new_correlation_id
 
 configure_logging()
 
@@ -136,6 +136,7 @@ def _format_attempts(attempts: list[dict]) -> str:
 
 
 def run_diagnosis():
+    new_correlation_id()
     graph = build_diagnosis_graph()
     result = graph.invoke({"max_retries": 3})
 

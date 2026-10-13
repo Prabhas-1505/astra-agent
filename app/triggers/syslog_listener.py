@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.agent.graph import build_graph
-from app.logging_config import configure_logging
+from app.logging_config import configure_logging, new_correlation_id
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -33,7 +33,8 @@ ALERT_PATTERN = re.compile(r"%[A-Z0-9_]+-\d-[A-Z0-9_]+")
 
 
 def run_astra():
-    logger.info("[ALERT] launching ASTRA...")
+    correlation_id = new_correlation_id()
+    logger.info("[ALERT] launching ASTRA (correlation_id=%s)...", correlation_id)
     graph = build_graph()
     graph.invoke({"max_retries": 3})
 

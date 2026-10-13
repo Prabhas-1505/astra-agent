@@ -5,35 +5,48 @@ gather evidence from multiple angles, form ranked hypotheses, verify them
 against the live device before trusting them, and hand a human a root cause
 with a confidence score and a specific fix — never an auto-applied change.
 
+See [`docs/ENGINEERING_DECISIONS.md`](docs/ENGINEERING_DECISIONS.md) for why
+the architecture looks the way it does and what alternatives were rejected,
+and [`docs/INTERVIEW_GUIDE.md`](docs/INTERVIEW_GUIDE.md) for a self-defense
+Q&A grounded in the actual code.
+
 ## Architecture
 
-```
-                     ┌── Topology Analyzer ──┐
-        START ───────┼── Config Analyzer ────┼──▶ Context Aggregator
-                     └── Logs Analyzer ──────┘              │
-                                                              ▼
-                                                    Hypothesis Engine ◀── KB precedent
-                                                              │            (past cases)
-                                                              ▼
-                                                    Diagnostic Tool (Netmiko)
-                                                              │
-                                                              ▼
-                              ┌── refuted (retry ≤3) ── Validation Loop
-                              │                              │ confirmed
-                              │                              ▼
-                              │                    Root Cause Synthesis
-                              │                              │
-                              ▼                              ▼
-                    Escalate (inconclusive)          Human Approval Gate
-                              │                              │
-                              └──────────┬───────────────────┘
-                                         ▼
-                              KB writeback (outcome + root cause)
+This is the actual compiled LangGraph (`app/agent/graph.py::build_graph`), not
+an idealized sketch — node names match the functions in `app/agent/nodes.py`.
+
+```mermaid
+flowchart TD
+    START([START]) --> LOGS[logs_analyzer]
+    START --> TOPO[topology_analyzer]
+    START --> CFG[config_analyzer]
+
+    LOGS --> AGG[context_aggregator]
+    TOPO --> AGG
+    CFG --> AGG
+
+    AGG --> HYP[hypothesis_engine]
+    KB[(KB: runbooks +\nlearned past cases)] -.retrieval.-> HYP
+
+    HYP --> DIAG[diagnostic_tool\nNetmiko, allowlist-enforced]
+    DIAG --> VAL{validation}
+
+    VAL -->|confirmed| RCS[root_cause_synthesis]
+    VAL -->|retry, ≤3 attempts| HYP
+    VAL -->|exhausted| ESC[escalate_inconclusive]
+
+    RCS --> APPROVAL[human_approval gate]
+    APPROVAL -->|writeback| KB
+    ESC -->|writeback| KB
+
+    APPROVAL --> END1([END])
+    ESC --> END2([END])
 ```
 
-Full design rationale and the v1→v2 revision (closing the feedback loop,
-bounding the retry, consolidating tooling) are written up separately; this
-README covers what's actually built and how to run it.
+Full design rationale, including the alternatives rejected along the way
+(single vs. multi-device hypotheses, full-context vs. structured-fingerprint
+retrieval), is in `docs/ENGINEERING_DECISIONS.md`; this README covers what's
+actually built and how to run it.
 
 ## What's implemented
 
@@ -92,10 +105,21 @@ README covers what's actually built and how to run it.
   live SVG of the lab topology so the active fault is visible at a glance.
 - **Observability** — structured `logging` (not `print`) for everything
   except the CLI's own human-facing prompts, level-configurable via
-  `ASTRA_LOG_LEVEL`. Three env vars (`LANGCHAIN_TRACING_V2`,
+  `ASTRA_LOG_LEVEL`. `ASTRA_LOG_FORMAT=json` switches to structured JSON
+  lines; either way, a correlation ID is generated once per diagnosis run
+  (`app/logging_config.py::new_correlation_id`) and attached to every log
+  line via a `contextvars`-based filter, so one run's logs can be grepped out
+  of a shared stream. Three env vars (`LANGCHAIN_TRACING_V2`,
   `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`) turn on full LangSmith tracing of
   every graph run with zero code changes — langchain-core reads them
   natively.
+- **Device-failure isolation** — a device that's actually unreachable used
+  to crash the whole graph run with an unhandled Netmiko/Paramiko exception,
+  straight out of the analyzer fan-out. `_safe_run_commands`
+  (`app/agent/nodes.py`) catches it and turns the failure into evidence
+  (`DEVICE_UNREACHABLE: <reason>`) instead — live-verified by pointing
+  `R2_PORT` at a closed port: ASTRA logged R2 as unreachable and still
+  reached the correct diagnosis using R1's evidence. See "Reliability" below.
 - **Retry/backoff on LLM calls** — the same `tenacity` pattern already used
   for Netmiko (`app/tools/netmiko_tool.py`) now also wraps the structured-
   output LLM calls in `app/agent/nodes.py`, for transient network/timeout
@@ -145,6 +169,47 @@ technique reliably stops a sufficiently adversarial log line from influencing
 an LLM's own reasoning — that's a general, open problem for LLM-based systems,
 not something this project claims to have solved.
 
+## Reliability
+
+**Device-failure isolation.** Before this pass, a device that was actually
+unreachable — not misconfigured, genuinely not answering SSH — raised an
+unhandled Netmiko/Paramiko exception straight out of `logs_analyzer`/
+`topology_analyzer`/`config_analyzer`'s dict/list comprehensions (or
+`diagnostic_tool`'s), crashing the entire graph run before a diagnosis was
+even attempted. `_safe_run_commands` (`app/agent/nodes.py`) catches the
+failure and returns it as evidence instead:
+
+```
+WARNING app.agent.nodes: DEVICE_UNREACHABLE: R2 is unreachable (TCP connection to device failed...)
+```
+
+**Live-verified, not just unit-tested:** with the lab running, pointing
+`R2_PORT` at a closed port (`R2_PORT=2299 python -m app.main`) and running
+the real `gi_shutdown` scenario — ASTRA logged R2 as unreachable, continued
+using only R1's evidence, and still reached the correct diagnosis (R1's
+interface shutdown, 0.95 confidence). The failure didn't just not-crash; the
+diagnosis still *succeeded* using the device that was actually reachable.
+
+Finding the right exception types to catch required checking
+`netmiko.exceptions`' real class hierarchy rather than assuming one base
+class: `NetmikoTimeoutException` and `NetmikoAuthenticationException`
+inherit from `paramiko.ssh_exception.SSHException`, not from Netmiko's own
+`NetmikoBaseException` — confirmed via `__mro__`, which is why the fix
+catches `(NetmikoBaseException, SSHException, OSError)`, not just the one
+base class that looked obviously relevant. A test against the wrong base
+class would have passed against a mock while missing the actual common
+failure in production. See `tests/test_device_isolation.py`.
+
+**Why this isn't wired into the automated multi-scenario eval loop:**
+`netmiko_tool.DEVICES` is built once, from environment variables, at module
+import time — by the time `eval/run_eval.py` is cycling through scenarios in
+one process, there's no way to make one scenario's R2 unreachable without
+affecting every other scenario in the same run. Making `DEVICES` lazily
+re-read per scenario would fix this properly but touches every call site
+that currently does `for name in DEVICES`; not done in this pass. The manual
+repro above and the unit tests are the honest substitute, not a workaround
+dressed up as a full automated scenario.
+
 ## Known limitations
 
 Collected in one place rather than scattered through the README — what's
@@ -185,6 +250,17 @@ genuinely missing or constrained, and why it wasn't worth fixing here.
   positive, not the "exhausts into inconclusive" failure mode this project's
   bounded-retry design was built to catch. Not fixed; would need either a
   second independent verification pass or a stricter validation prompt.
+- **Validation also swings the other way: rejecting a correct hypothesis**
+  because its evidence is an *absence* (a missing config statement) rather
+  than a specific wrong value. Measured live on `ospf_network_missing` (see
+  "Eval harness" for the full detail): correct across both measurement
+  sessions combined only 2/5 of the time, with one capture showing
+  Validation refuse to confirm the literally-correct root cause on its
+  third, most-precisely-worded attempt. The two findings together (this one
+  and the `mtu_mismatch` false positive above) suggest Validation's
+  confirm/refute threshold isn't well-calibrated in either direction yet —
+  not a one-sided "too lenient" or "too strict" problem, which makes a
+  simple prompt tweak unlikely to fix both at once.
 - **No hosted demo or recorded walkthrough** — both would need screen/account
   access this environment doesn't have; the "Running ASTRA" section below is
   kept accurate enough to self-serve either whenever needed.
@@ -197,7 +273,8 @@ CLI (`show ip interface brief`, `show running-config`, etc.) over real SSH —
 realistic enough that Netmiko's connection handling, prompt detection, and
 command parsing are genuinely exercised, not mocked out.
 
-Five fault scenarios are built in, switchable via `FAULT_SCENARIO`:
+Six scenarios are built in, switchable via `FAULT_SCENARIO` — five real
+faults plus one negative case:
 
 | Scenario | Fault |
 |---|---|
@@ -206,6 +283,7 @@ Five fault scenarios are built in, switchable via `FAULT_SCENARIO`:
 | `area_mismatch` | R2's OSPF area ID doesn't match R1's |
 | `duplicate_ip` | R2's interface was misconfigured with R1's IP address (conflict) |
 | `mtu_mismatch` | R1's interface MTU doesn't match R2's, so OSPF's DBD exchange never completes |
+| `healthy_network` | **No fault.** Full OSPF adjacency, config matches golden, benign logs — the negative case; see "Eval harness" for what ASTRA actually does with it. |
 
 ```bash
 docker compose -f lab/docker-compose.yml up -d --build          # default scenario
@@ -255,8 +333,8 @@ the fix.
 
 ## Eval harness
 
-`eval/run_eval.py` cycles ASTRA through all five fault scenarios
-automatically (restarting the lab and clearing a scratch KB between each),
+`eval/run_eval.py` cycles ASTRA through all six scenarios automatically
+(restarting and rebuilding the lab, and clearing a scratch KB, between each),
 grades the diagnosis against the actual ground truth, and reports accuracy —
 this is what backs the confidence numbers instead of just asserting them.
 Each scenario now runs multiple times (`--runs`, default 5) and the report
@@ -267,7 +345,7 @@ actual contribution can be measured by diffing two reports instead of
 assumed.
 
 ```bash
-python -m eval.run_eval                       # all 5 scenarios, 5 runs each
+python -m eval.run_eval                       # all 6 scenarios, 5 runs each
 python -m eval.run_eval --runs 3 --scenario mtu_mismatch --scenario duplicate_ip
 python -m eval.run_eval --no-kb               # ablation: KB disabled
 ```
@@ -372,6 +450,60 @@ and arguably a better one — the agent now reaches *a* conclusion instead of
 stalling out — but it means Validation's strictness isn't perfect either, and
 multi-run variance on this scenario specifically is worth watching rather than
 assuming the 100% above is guaranteed every time.
+
+**A second, independent finding on re-check, and a correction to the 100%
+above:** a later full-suite sweep (run as part of final verification, not
+cherry-picked) scored `ospf_network_missing` 0/2, and a targeted 3-run
+re-check of just that scenario scored 2/3 — combined, 2/5 (40%) across the
+two sessions, not the 100% reported above from an earlier, smaller sample.
+The detailed failure, captured on the targeted re-check: the model correctly
+gathered the right evidence (R1's running-config genuinely has no `network`
+statement) across all three of its attempts, and on the *third* attempt
+phrased the hypothesis as the literally correct root cause — yet Validation
+still refused to confirm it: *"the evidence does not explicitly confirm this
+is the root cause, as other factors could also affect OSPF participation."*
+This is the same underlying pattern already documented above (evidence of an
+*absence* is treated as weaker proof than evidence of a specific wrong
+value) recurring as a live failure, not a one-time fluke from early
+development — Validation's strictness, calibrated to avoid false positives
+(see `docs/INTERVIEW_GUIDE.md` Q17), is here erring in the *other* direction
+and rejecting a correct diagnosis. Not fixed in this pass; the 73%→100%
+narrative above is still accurate for the specific 3-run session it
+describes, but the honest overall picture for `ospf_network_missing`
+specifically is closer to a coin flip than a solved case, and is recorded as
+such rather than left standing uncorrected once contradicting data existed.
+
+**The negative case — does ASTRA hallucinate a fault when there isn't one?**
+Every scenario above injects a real fault; none of them test whether ASTRA
+*avoids* confirming one when the network is actually healthy — the thing
+"false-positive rate" is supposed to measure. `healthy_network` (full OSPF
+adjacency, config matching golden exactly, benign logs) exists for exactly
+this. Measured, 3 runs:
+
+```
+=== EVAL REPORT ===
+Runs per scenario: 3  |  KB: on
+Overall accuracy: 100%
+
+scenario                accuracy    confidence      retries       latency (s)     cost ($)
+healthy_network         100%        n/a             3.0±0.0        17.1±3.8        0.0008±0.0000
+
+Total estimated cost for this eval run: $0.0025
+```
+
+All 3 runs correctly reached `INCONCLUSIVE` — not by Validation never being
+*tempted*: the harness's own logs show the Hypothesis Engine proposing
+plausible-sounding candidates (an MTU mismatch, an OSPF config-parameter
+issue) against the healthy evidence, and Validation correctly refuting each
+one using the actual (healthy) data before exhausting into `INCONCLUSIVE`.
+0% false-positive rate on this sample — small, and not a guarantee it holds
+at larger N, but it's a real measured number instead of an assumed one.
+(First attempt at this got a 100%-*wrong* "both devices unreachable" result
+— a harness bug, not an ASTRA finding: `restart_lab()` recreated the
+containers without rebuilding the image, so the brand-new `healthy_network.py`
+scenario file wasn't actually in the running container. Fixed by always
+passing `--build` to the lab's `docker compose up` — cheap no-op when
+nothing changed, correct when something did.)
 
 ## Containerization
 
