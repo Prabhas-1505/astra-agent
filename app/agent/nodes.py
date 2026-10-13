@@ -317,8 +317,33 @@ def hypothesis_engine(state):
 
 
 def diagnostic_tool(state):
+    """Enforces, in code, the two boundaries the prompts only *ask* the LLM to
+    respect: `ALLOWED_COMMANDS` and known `DEVICES`. `Hypothesis.verify_commands`
+    and `.target_devices` are free-text LLM output — prior to this, a
+    hallucinated device name reached `run_commands` directly and crashed the
+    whole run with an unhandled KeyError (netmiko_tool.py does `DEVICES[name]`
+    with no guard), and an off-allowlist command would have been sent to the
+    device with no code-level check at all, only a prompt instruction. Neither
+    is reachable anymore: unknown devices/commands are dropped and logged, and
+    if nothing valid survives, evidence is empty — which Validation correctly
+    refuses to confirm against, same as any other insufficient-evidence case,
+    rather than the graph crashing.
+    """
     h = state["current_hypothesis"]
-    evidence = {device: run_commands(device, h["verify_commands"]) for device in h["target_devices"]}
+    safe_devices = [d for d in h["target_devices"] if d in DEVICES]
+    unknown_devices = [d for d in h["target_devices"] if d not in DEVICES]
+    safe_commands = [c for c in h["verify_commands"] if c in ALLOWED_COMMANDS]
+    rejected_commands = [c for c in h["verify_commands"] if c not in ALLOWED_COMMANDS]
+
+    if unknown_devices:
+        logger.warning("diagnostic_tool: ignoring unknown device(s): %s", unknown_devices)
+    if rejected_commands:
+        logger.warning("diagnostic_tool: ignoring non-allowlisted command(s): %s", rejected_commands)
+
+    if not safe_devices or not safe_commands:
+        return {"current_evidence": {}}
+
+    evidence = {device: run_commands(device, safe_commands) for device in safe_devices}
     return {"current_evidence": evidence}
 
 

@@ -24,5 +24,8 @@ jobs:
       - name: Lint
         run: ruff check .
 
+      - name: Dependency vulnerability scan
+        run: pip-audit -r requirements.txt
+
       - name: Run tests
         run: python -m pytest tests/ -v

@@ -105,6 +105,46 @@ README covers what's actually built and how to run it.
   containers, so `docker compose up` is enough with nothing needed on the
   host but Docker itself and a filled-in `.env`.
 
+## Security
+
+Boundaries that are actually enforced in code, not just asked for in a prompt:
+
+- **Command allowlisting.** `Hypothesis.verify_commands` is free-text LLM
+  output. Before this pass, the only thing keeping it to `ALLOWED_COMMANDS`
+  was a prompt instruction — a hallucinating or adversarially-steered model
+  could have produced any string, and `diagnostic_tool` sent it straight to
+  the device. `diagnostic_tool` (`app/agent/nodes.py`) now filters
+  `verify_commands` against `ALLOWED_COMMANDS` and `target_devices` against
+  the known `DEVICES` in code; anything off-list is dropped and logged at
+  `WARNING`, never reaches `run_commands`. See `tests/test_security_boundaries.py`.
+- **No crash on a hallucinated device.** Previously a device name not in
+  `DEVICES` reached `netmiko_tool.py`'s `DEVICES[device_name]` lookup directly
+  and raised an unhandled `KeyError`, crashing the whole run. Now it's filtered
+  out same as an unknown command; if nothing valid survives, evidence is empty
+  and Validation correctly refuses to confirm — same `INCONCLUSIVE` path as
+  any other insufficient-evidence case, not a crash.
+- **No credential fallback in source.** `netmiko_tool.py` no longer ships a
+  default username/password — `ROUTER_USER`/`ROUTER_PASS` must be set via
+  the environment (`.env.example`/compose files), and `run_commands` raises
+  clearly if they're not, rather than silently connecting with a known
+  default. The lab's fixture credential (`netops`/`C1sco123!`) now lives in
+  `docker-compose.yml`/`lab/docker-compose.yml` as an explicit, overridable
+  default — not buried in the Python client that would run against a real
+  device too.
+- **Dependency scanning** — `pip-audit -r requirements.txt` runs in CI
+  alongside `ruff`; currently clean.
+
+**Not addressed, and worth naming rather than ignoring:** there's no explicit
+SSH host-key verification policy (relies on Netmiko/Paramiko defaults —
+irrelevant against `127.0.0.1`, real for any future real-device deployment),
+and no sanitization boundary between untrusted evidence (device logs/config)
+and the LLM prompt — log/config text is concatenated into prompts as-is. The
+command/device allowlisting above closes the one boundary that's actually
+enforceable in code (what ASTRA is *permitted to execute*); no code-level
+technique reliably stops a sufficiently adversarial log line from influencing
+an LLM's own reasoning — that's a general, open problem for LLM-based systems,
+not something this project claims to have solved.
+
 ## Known limitations
 
 Collected in one place rather than scattered through the README — what's
@@ -179,7 +219,7 @@ FAULT_SCENARIO=area_mismatch docker compose -f lab/docker-compose.yml up -d --fo
 ```bash
 uv venv --python 3.11 .venv && source .venv/bin/activate
 uv pip install -r requirements.txt
-cp .env.example .env   # fill in OPENAI_API_KEY
+cp .env.example .env   # fill in OPENAI_API_KEY (ROUTER_USER/ROUTER_PASS already default to the lab fixture)
 docker compose -f lab/docker-compose.yml up -d --build
 
 python -m app.main
@@ -192,7 +232,7 @@ approval before writing the outcome back to the KB.
 **Option B — everything in containers:**
 
 ```bash
-cp .env.example .env   # fill in OPENAI_API_KEY
+cp .env.example .env   # fill in OPENAI_API_KEY (ROUTER_USER/ROUTER_PASS already default to the lab fixture)
 docker compose up -d --build        # routers + Gradio UI (localhost:7900) + syslog listener
 docker compose run --rm cli         # interactive CLI, on demand
 ```

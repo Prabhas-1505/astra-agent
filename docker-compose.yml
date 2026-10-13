@@ -12,6 +12,10 @@ services:
       - ROUTER_NAME=R1
       - FAULT_SCENARIO=${FAULT_SCENARIO:-gi_shutdown}
       - ALERT_HOST=listener
+      # Lab-fixture credential, now an explicit compose-level default instead
+      # of a hardcoded fallback buried in Python source (see netmiko_tool.py).
+      - ROUTER_USER=${ROUTER_USER:-netops}
+      - ROUTER_PASS=${ROUTER_PASS:-C1sco123!}
     networks:
       - astranet
 
@@ -21,6 +25,8 @@ services:
       - ROUTER_NAME=R2
       - FAULT_SCENARIO=${FAULT_SCENARIO:-gi_shutdown}
       - ALERT_HOST=listener
+      - ROUTER_USER=${ROUTER_USER:-netops}
+      - ROUTER_PASS=${ROUTER_PASS:-C1sco123!}
     networks:
       - astranet
 
