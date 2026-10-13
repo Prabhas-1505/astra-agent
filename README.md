@@ -15,32 +15,61 @@ Q&A grounded in the actual code.
 This is the actual compiled LangGraph (`app/agent/graph.py::build_graph`), not
 an idealized sketch — node names match the functions in `app/agent/nodes.py`.
 
+
 ```mermaid
 flowchart TD
-    START([START]) --> LOGS[logs_analyzer]
-    START --> TOPO[topology_analyzer]
-    START --> CFG[config_analyzer]
+    A["Network Fault / Syslog Event"] --> B["ASTRA Trigger"]
+    B --> C["LangGraph Supervisor"]
 
-    LOGS --> AGG[context_aggregator]
-    TOPO --> AGG
-    CFG --> AGG
+    C --> D["Topology Agent"]
+    C --> E["Configuration Agent"]
+    C --> F["Log Analysis Agent"]
 
-    AGG --> HYP[hypothesis_engine]
-    KB[(KB: runbooks +\nlearned past cases)] -.retrieval.-> HYP
+    D --> G["Collect Network Evidence"]
+    E --> G
+    F --> G
 
-    HYP --> DIAG[diagnostic_tool\nNetmiko, allowlist-enforced]
-    DIAG --> VAL{validation}
+    G --> H["Hypothesis / Root Cause Engine"]
 
-    VAL -->|confirmed| RCS[root_cause_synthesis]
-    VAL -->|retry, ≤3 attempts| HYP
-    VAL -->|exhausted| ESC[escalate_inconclusive]
+    K["RAG Knowledge Base"] --> H
+    L["Historical Incidents + Runbooks"] --> K
 
-    RCS --> APPROVAL[human_approval gate]
-    APPROVAL -->|writeback| KB
-    ESC -->|writeback| KB
+    H --> I["Generate Root Cause Hypothesis"]
+    I --> J["Live Verification via Netmiko"]
 
-    APPROVAL --> END1([END])
-    ESC --> END2([END])
+    J --> M{"Evidence Supports Hypothesis?"}
+
+    M -->|Yes| N["Verified Diagnosis"]
+    M -->|No| O{"Retry Limit Reached?"}
+
+    O -->|No| P["Collect Additional Evidence"]
+    P --> C
+
+    O -->|Yes| Q["Human Escalation"]
+
+    N --> R["Human Review / Approval"]
+    Q --> R
+
+    R --> S{"Approved?"}
+
+    S -->|Yes| T["Store Validated Incident in Knowledge Base"]
+    S -->|No| U["Record Feedback / Rejection"]
+
+    T --> V["Dashboard + Final Report"]
+    U --> V
+
+    classDef entry fill:#dbeafe,stroke:#2563eb,color:#1e40af
+    classDef agent fill:#e0e7ff,stroke:#6366f1,color:#312e81
+    classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef success fill:#dcfce7,stroke:#16a34a,color:#166534
+    classDef failure fill:#fee2e2,stroke:#dc2626,color:#991b1b
+
+    class A,B,C entry
+    class D,E,F,G,H,I,J,K,L,P agent
+    class M,O,S decision
+    class N,T,V success
+    class Q,U failure
+```
 ```
 
 Full design rationale, including the alternatives rejected along the way
