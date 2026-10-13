@@ -46,7 +46,7 @@ async def handle_client(process):
                 continue
             output = COMMANDS.get(cmd)
             if output is None:
-                process.stdout.write(f"% Invalid input detected at '^' marker.\r\n")
+                process.stdout.write("% Invalid input detected at '^' marker.\r\n")
             else:
                 process.stdout.write(output)
             process.stdout.write(f"{PROMPT} ")

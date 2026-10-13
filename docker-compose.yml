@@ -1,0 +1,93 @@
+# Top-level compose: runs the *entire* stack in containers — fake routers,
+# the Gradio UI, and the syslog listener — so `docker compose up` is enough,
+# with nothing needed on the host but Docker and a filled-in .env.
+#
+# lab/docker-compose.yml still exists separately for the original workflow
+# (routers in Docker, ASTRA itself run on the host via a local venv) — see
+# the README "Running ASTRA" section for when to use which.
+services:
+  r1:
+    build: ./lab/fake_router
+    environment:
+      - ROUTER_NAME=R1
+      - FAULT_SCENARIO=${FAULT_SCENARIO:-gi_shutdown}
+      - ALERT_HOST=listener
+    networks:
+      - astranet
+
+  r2:
+    build: ./lab/fake_router
+    environment:
+      - ROUTER_NAME=R2
+      - FAULT_SCENARIO=${FAULT_SCENARIO:-gi_shutdown}
+      - ALERT_HOST=listener
+    networks:
+      - astranet
+
+  ui:
+    build: .
+    command: python -m app.ui.gradio_app
+    env_file: .env
+    environment:
+      - R1_HOST=r1
+      - R1_PORT=8022
+      - R2_HOST=r2
+      - R2_PORT=8022
+      - FAULT_SCENARIO=${FAULT_SCENARIO:-gi_shutdown}
+      - PORT=7900
+      - GRADIO_SERVER_NAME=0.0.0.0
+    ports:
+      - "7900:7900"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - r1
+      - r2
+    networks:
+      - astranet
+
+  listener:
+    build: .
+    command: python -m app.triggers.syslog_listener
+    env_file: .env
+    environment:
+      - R1_HOST=r1
+      - R1_PORT=8022
+      - R2_HOST=r2
+      - R2_PORT=8022
+      - LISTEN_HOST=0.0.0.0
+    ports:
+      - "5514:5514/udp"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - r1
+      - r2
+    networks:
+      - astranet
+
+  # Interactive CLI, not started by `up` — run on demand: `docker compose run --rm cli`
+  cli:
+    build: .
+    command: python -m app.main
+    env_file: .env
+    environment:
+      - R1_HOST=r1
+      - R1_PORT=8022
+      - R2_HOST=r2
+      - R2_PORT=8022
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - r1
+      - r2
+    networks:
+      - astranet
+    profiles:
+      - cli
+
+networks:
+  astranet:
+    driver: bridge

@@ -41,4 +41,31 @@ RUNBOOKS = [
             "golden baseline to catch it quickly."
         ),
     },
+    {
+        "title": "Duplicate IP address on the link",
+        "body": (
+            "Symptom: both interfaces show up/up and CDP sees the correct "
+            "neighbor, but OSPF neighbor count stays 0; logs show "
+            "%IP-4-DUPADDR on one or both sides. Cause: two devices on the "
+            "same subnet were configured with the same IP address (often a "
+            "copy-paste error during a change window). Fix: correct the "
+            "duplicated device's `ip address` back to its intended unique "
+            "address — diff running-config against the golden baseline to "
+            "see which side actually drifted."
+        ),
+    },
+    {
+        "title": "OSPF neighbor stuck pre-FULL — MTU mismatch",
+        "body": (
+            "Symptom: interface up/up, network statement correct on both "
+            "sides, but the neighbor repeatedly cycles EXSTART -> DOWN with "
+            "'Too many retransmissions' in %OSPF-5-ADJCHG instead of ever "
+            "reaching FULL. Cause: the two ends have mismatched interface "
+            "MTU, so OSPF's database-description exchange never completes "
+            "(IOS rejects DBD packets on an MTU mismatch unless `ip ospf "
+            "mtu-ignore` is set). Fix: align the `mtu` value on both "
+            "interfaces — diff running-config against the golden baseline to "
+            "spot the drifted `mtu` line."
+        ),
+    },
 ]

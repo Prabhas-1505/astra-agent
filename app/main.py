@@ -4,7 +4,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.agent.graph import build_graph  # noqa: E402
+from app.agent.graph import build_graph
+from app.logging_config import configure_logging
+
+configure_logging()
 
 
 def main():

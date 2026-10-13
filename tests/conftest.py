@@ -5,29 +5,53 @@ import pytest
 os.environ.setdefault("OPENAI_API_KEY", "test-key-not-used")
 
 
+class _FakeRawMessage:
+    """Stands in for the AIMessage returned under `raw` when
+    `include_raw=True` — real langchain-core exposes token counts on
+    `.usage_metadata`, not via a deprecated callback handler.
+    """
+
+    def __init__(self, usage_metadata):
+        self.usage_metadata = usage_metadata
+
+
+# Shaped like real `usage_metadata` (nested detail dicts included), not just
+# the three top-level ints — a prior version of this fixture only had the
+# flat ints, which let a real bug (graph.py's merge reducer summing the
+# nested dicts as if they were ints) ship past the test suite.
+_DEFAULT_FAKE_USAGE = {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "total_tokens": 15,
+    "input_token_details": {"audio": 0, "cache_read": 0},
+    "output_token_details": {"audio": 0, "reasoning": 0},
+}
+
+
 class FakeStructuredLLM:
-    """Stands in for `llm.with_structured_output(Model).invoke(prompt)`.
+    """Stands in for `llm.with_structured_output(Model, include_raw=True).invoke(prompt)`.
 
     Returns canned responses in order, one per call, regardless of prompt —
     the point of these unit tests is the graph's branching logic, not the
     model's reasoning (that's what the eval harness measures).
     """
 
-    def __init__(self, responses):
+    def __init__(self, responses, usage=None):
         self._responses = list(responses)
         self.calls = 0
+        self._usage = usage or _DEFAULT_FAKE_USAGE
 
     def invoke(self, prompt):
         response = self._responses[min(self.calls, len(self._responses) - 1)]
         self.calls += 1
-        return response
+        return {"parsed": response, "raw": _FakeRawMessage(self._usage), "parsing_error": None}
 
 
 class FakeLLM:
     def __init__(self, responses):
         self._structured = FakeStructuredLLM(responses)
 
-    def with_structured_output(self, _model):
+    def with_structured_output(self, _model, include_raw=False):
         return self._structured
 
 

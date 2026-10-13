@@ -1,0 +1,13 @@
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F"]
+# E402 (module-level import not at top of file) is a deliberate pattern here:
+# app.main / app.ui.gradio_app / app.triggers.syslog_listener / eval.run_eval all
+# call load_dotenv() before importing app.agent.graph, so OPENAI_API_KEY is set
+# before any module that constructs a ChatOpenAI client at import time.
+ignore = [
+    "E402",  # see note above: deliberate post-load_dotenv() import ordering
+    "E501",  # long lines are mostly fake-CLI banner/log-line string literals; not worth reformatting
+]

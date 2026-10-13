@@ -7,17 +7,21 @@ the moment a message matches a standard Cisco severity pattern, instead of
 requiring someone to notice the incident and run ASTRA by hand.
 """
 
+import logging
 import os
 import re
 import socket
-import sys
 import time
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.agent.graph import build_graph  # noqa: E402
+from app.agent.graph import build_graph
+from app.logging_config import configure_logging
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 HOST = os.environ.get("LISTEN_HOST", "0.0.0.0")
 PORT = int(os.environ.get("LISTEN_PORT", "5514"))
@@ -29,7 +33,7 @@ ALERT_PATTERN = re.compile(r"%[A-Z0-9_]+-\d-[A-Z0-9_]+")
 
 
 def run_astra():
-    print("\n[ALERT] launching ASTRA...\n")
+    logger.info("[ALERT] launching ASTRA...")
     graph = build_graph()
     graph.invoke({"max_retries": 3})
 
@@ -37,13 +41,13 @@ def run_astra():
 def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((HOST, PORT))
-    print(f"[listener] watching for syslog alerts on udp:{HOST}:{PORT}", file=sys.stderr)
+    logger.info("watching for syslog alerts on udp:%s:%s", HOST, PORT)
 
     last_trigger = 0.0
     while True:
         data, addr = sock.recvfrom(4096)
         message = data.decode(errors="replace").strip()
-        print(f"[listener] {addr[0]}: {message}", file=sys.stderr)
+        logger.debug("%s: %s", addr[0], message)
 
         if not ALERT_PATTERN.search(message):
             continue
@@ -52,6 +56,7 @@ def main():
         if now - last_trigger < COOLDOWN_SECONDS:
             continue  # same incident likely still emitting more log lines
         last_trigger = now
+        logger.info("alert matched from %s: %s", addr[0], message)
         run_astra()
 
 

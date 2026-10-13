@@ -18,12 +18,13 @@ def test_write_then_retrieve_round_trip(monkeypatch, tmp_path, fake_embeddings):
 
     kb_store.write_case(
         "OSPF adjacency down on R1 due to shutdown interface",
+        "R1 interfaces: Gi0/0=administratively down/down",
         {"statement": "Gi0/0 shut down", "confidence": 0.95, "recommended_fix": "no shutdown"},
         "approved",
     )
 
     assert kb_path.exists()
-    results = kb_store.retrieve_similar("OSPF adjacency down on R1 due to shutdown interface", k=2)
+    results = kb_store.retrieve_similar("R1 interfaces: Gi0/0=administratively down/down", k=2)
     assert len(results) == 1
     assert results[0]["outcome"] == "approved"
     assert results[0]["root_cause"]["statement"] == "Gi0/0 shut down"
@@ -46,7 +47,9 @@ def test_retrieve_respects_k_and_ranks_by_similarity(monkeypatch, tmp_path):
         ("closest match", "approved"),
         ("middle match", "rejected"),
     ]:
-        kb_store.write_case(text, {"statement": text, "confidence": 0.5, "recommended_fix": "n/a"}, outcome)
+        kb_store.write_case(
+            text, text, {"statement": text, "confidence": 0.5, "recommended_fix": "n/a"}, outcome
+        )
 
     results = kb_store.retrieve_similar("query", k=2)
 

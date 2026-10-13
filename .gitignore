@@ -4,3 +4,4 @@ __pycache__/
 .env
 .clab/
 *.bak
+data/eval_cases.json

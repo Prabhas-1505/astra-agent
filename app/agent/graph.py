@@ -1,8 +1,26 @@
-from typing import Optional, TypedDict
+from typing import Annotated, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from app.agent import nodes
+
+
+_TOKEN_USAGE_KEYS = ("input_tokens", "output_tokens", "total_tokens")
+
+
+def _merge_token_usage(a: Optional[dict], b: Optional[dict]) -> dict:
+    """Reducer for `token_usage`: hypothesis_engine/validation/root_cause_synthesis
+    each report the usage of their own LLM call, and langgraph folds them together
+    across the whole run via this function instead of each node needing to read
+    and re-add the running total itself.
+
+    Only the three top-level numeric totals are summed — real `usage_metadata`
+    also carries nested breakdown dicts (`input_token_details`,
+    `output_token_details`, e.g. `{"audio": 0, "cache_read": 0}`), which aren't
+    needed for the eval harness's cost estimate and aren't summable as plain ints.
+    """
+    a, b = a or {}, b or {}
+    return {k: a.get(k, 0) + b.get(k, 0) for k in _TOKEN_USAGE_KEYS}
 
 
 class AstraState(TypedDict, total=False):
@@ -10,7 +28,9 @@ class AstraState(TypedDict, total=False):
     topology: dict[str, dict]
     config_drift: dict[str, str]
     context: str
+    symptom_fingerprint: str
     current_hypothesis: dict
+    pending_hypotheses: list[dict]
     current_evidence: dict
     attempts: list[dict]
     kb_precedent: list[dict]
@@ -21,6 +41,7 @@ class AstraState(TypedDict, total=False):
     max_retries: int
     root_cause: Optional[dict]
     approval: Optional[str]
+    token_usage: Annotated[dict, _merge_token_usage]
 
 
 def route_after_validation(state: AstraState) -> str:

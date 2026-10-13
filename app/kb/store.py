@@ -61,14 +61,21 @@ def retrieve_runbooks(context_text: str, k: int = 1) -> list[dict]:
     return [rb for _, rb in scored[:k]]
 
 
-def write_case(context_text: str, root_cause: dict | None, outcome: str) -> None:
+def write_case(
+    context_text: str, fingerprint_text: str, root_cause: dict | None, outcome: str
+) -> None:
+    """`fingerprint_text` (see `app.agent.nodes.build_symptom_fingerprint`) is what
+    gets embedded for future retrieval — a compact, structured summary of what was
+    actually abnormal, rather than the full verbose context. `context_text` is kept
+    only as a truncated human-readable summary for the KB panel.
+    """
     cases = _load()
     cases.append(
         {
             "context_summary": context_text[:800],
             "root_cause": root_cause,
             "outcome": outcome,
-            "embedding": _embeddings.embed_query(context_text),
+            "embedding": _embeddings.embed_query(fingerprint_text),
         }
     )
     _save(cases)
